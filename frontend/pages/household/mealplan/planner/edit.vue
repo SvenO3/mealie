@@ -1,5 +1,62 @@
 <template>
   <div>
+    <!-- Recommendation Dialog -->
+    <BaseDialog
+      v-model="recommendationDialog"
+      :title="$t('meal-plan.recommendation')"
+      :submit-text="$t('general.create')"
+      color="primary"
+      :icon="$globals.icons.foods"
+      @submit="resetDialog"
+      @close="resetDialog"
+    >
+    <v-card-text>
+        <v-menu
+          v-model="state.pickerMenu"
+          :close-on-content-click="false"
+          transition="scale-transition"
+          offset-y
+          max-width="290px"
+          min-width="auto"
+        >
+          <template #activator="{ on, attrs2 }">
+            <v-text-field
+              v-model="newMeal.date"
+              :label="$t('general.date')"
+              :hint="$t('recipe.date-format-hint-yyyy-mm-dd')"
+              persistent-hint
+              :prepend-icon="$globals.icons.calendar"
+              v-bind="attrs2"
+              readonly
+              v-on="on"
+            />
+          </template>
+          <v-date-picker
+            v-model="newMeal.date"
+            no-title
+            :first-day-of-week="firstDayOfWeek"
+            :local="$i18n.locale"
+            @input="state.pickerMenu = false"
+          />
+        </v-menu>
+        <v-card-text>
+          <v-select
+            v-model="newMeal.entryType"
+            :return-object="false"
+            :items="planTypeOptions"
+            :label="$t('recipe.entry-type')"
+          />
+        </v-card-text>
+      </v-card-text>
+      <div style="display: flex; justify-content: center; align-items: center;">
+        <SearchFilter v-if="foods" v-model="selectedFoods" :items="foods" :class="attrs.searchFilter.filterClass">
+          <v-icon left>
+            {{ $globals.icons.foods }}
+          </v-icon>
+          {{ $t("general.foods") }}
+        </SearchFilter>
+      </div>
+    </BaseDialog>
     <!-- Create Meal Dialog -->
     <BaseDialog
       v-model="state.dialog"
@@ -33,14 +90,14 @@
           max-width="290px"
           min-width="auto"
         >
-          <template #activator="{ on, attrs }">
+          <template #activator="{ on, attrs2 }">
             <v-text-field
               v-model="newMeal.date"
               :label="$t('general.date')"
               :hint="$t('recipe.date-format-hint-yyyy-mm-dd')"
               persistent-hint
               :prepend-icon="$globals.icons.calendar"
-              v-bind="attrs"
+              v-bind="attrs2"
               readonly
               v-on="on"
             />
@@ -150,8 +207,8 @@
                 </v-icon>
               </v-btn>
               <v-menu offset-y>
-                <template #activator="{ on, attrs }">
-                  <v-chip v-bind="attrs" label small color="accent" v-on="on" @click.prevent>
+                <template #activator="{ on, attrs2 }">
+                  <v-chip v-bind="attrs2" label small color="accent" v-on="on" @click.prevent>
                     <v-icon left>
                       {{ $globals.icons.tags }}
                     </v-icon>
@@ -193,12 +250,17 @@
                     text: $tc('meal-plan.lunch'),
                     event: 'randomLunch',
                   },
+                  {
+                    icon: $globals.icons.diceMultiple,
+                    text: $tc('meal-plan.dinner'),
+                    event: 'randomDinner',
+                  },
                 ],
               },
               {
                 icon: $globals.icons.potSteam,
-                text: $tc('meal-plan.random-dinner'),
-                event: 'randomDinner',
+                text: $tc('meal-plan.recommendation'),
+                event: 'recommendation',
               },
               {
                 icon: $globals.icons.bowlMixOutline,
@@ -211,6 +273,7 @@
                 event: 'create',
               },
             ]"
+            @recommendation="openRecommendationDialog(plan.date)"
             @create="openDialog(plan.date)"
             @randomBreakfast="randomMeal(plan.date, 'breakfast')"
             @randomLunch="randomMeal(plan.date, 'lunch')"
@@ -224,7 +287,16 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, computed, reactive, ref, watch, onMounted, useContext } from "@nuxtjs/composition-api";
+import {
+  computed,
+  defineComponent,
+  onMounted,
+  ref,
+  reactive,
+  useContext,
+  useRoute,
+  watch
+} from "@nuxtjs/composition-api";
 import { format } from "date-fns";
 import { SortableEvent } from "sortablejs";
 import draggable from "vuedraggable";
@@ -233,6 +305,11 @@ import { useMealplans, usePlanTypeOptions, getEntryTypeText } from "~/composable
 import RecipeCardImage from "~/components/Domain/Recipe/RecipeCardImage.vue";
 import { PlanEntryType, UpdatePlanEntry } from "~/lib/api/types/meal-plan";
 import { useUserApi } from "~/composables/api";
+import { useLoggedInState } from "~/composables/use-logged-in-state";
+import { useFoodStore, usePublicFoodStore} from "~/composables/store";
+import { IngredientFood} from "~/lib/api/types/recipe";
+import SearchFilter from "~/components/Domain/SearchFilter.vue";
+import { useRecipeFinderPreferences } from "~/composables/use-users/preferences";
 import { useHouseholdSelf } from "~/composables/use-households";
 import { useRecipeSearch } from "~/composables/recipes/use-recipe-search";
 
@@ -240,10 +317,15 @@ export default defineComponent({
   components: {
     draggable,
     RecipeCardImage,
+    SearchFilter,
   },
   props: {
     mealplans: {
       type: Array as () => MealsByDate[],
+      required: true,
+    },
+    recommendationDialog: {
+      type: Boolean,
       required: true,
     },
     actions: {
@@ -253,9 +335,24 @@ export default defineComponent({
   },
   setup(props) {
     const api = useUserApi();
-    const { $auth } = useContext();
+    const { $auth, $vuetify } = useContext();
     const { household } = useHouseholdSelf();
+    const route = useRoute();
+    const useMobile = computed(() => $vuetify.breakpoint.smAndDown);
     const requiredRule = (value: any) => !!value || "Required."
+
+    const groupSlug = computed(() => route.value.params.groupSlug || $auth.user?.groupSlug || "");
+    const { isOwnGroup } = useLoggedInState();
+
+    const preferences = useRecipeFinderPreferences();
+
+    const attrs = computed(() => {
+      return {
+        searchFilter: {
+          filterClass: useMobile.value ? "ml-4 mb-2" : "mr-4 mb-2",
+        },
+      };
+    })
 
     const state = ref({
       dialog: false,
@@ -331,6 +428,11 @@ export default defineComponent({
       state.value.dialog = true;
     }
 
+    function openRecommendationDialog(date: Date) {
+      newMeal.date = format(date, "yyyy-MM-dd");
+      props.recommendationDialog = true;
+    }
+
     function editMeal(mealplan: UpdatePlanEntry) {
       const { date, title, text, entryType, recipeId, id, groupId, userId } = mealplan;
       if (!entryType) return;
@@ -377,7 +479,47 @@ export default defineComponent({
 
     onMounted(async () => {
       await search.trigger();
+      await Promise.all([hydrateFoods()]);
     });
+
+    // =====================================================
+    // Food
+
+    const foodStore = isOwnGroup.value ? useFoodStore() : usePublicFoodStore(groupSlug.value);
+    const selectedFoods = ref<IngredientFood[]>([]);
+    function addFood(food: IngredientFood) {
+      selectedFoods.value.push(food);
+      handleFoodUpdates();
+    }
+    function removeFood(food: IngredientFood) {
+      selectedFoods.value = selectedFoods.value.filter((f) => f.id !== food.id);
+      handleFoodUpdates();
+    }
+    function handleFoodUpdates() {
+      selectedFoods.value.sort((a, b) => (a.pluralName || a.name).localeCompare(b.pluralName || b.name));
+      preferences.value.foodIds = selectedFoods.value.map((food) => food.id);
+    }
+    watch(
+      () => selectedFoods.value,
+      () => {
+        handleFoodUpdates();
+      },
+    )
+
+   async function hydrateFoods() {
+      if (!preferences.value.foodIds.length) {
+        return;
+      }
+      if (!foodStore.store.value.length) {
+        await foodStore.actions.refresh();
+      }
+
+      const foods = preferences.value.foodIds
+      .map((foodId) => foodStore.store.value.find((food) => food.id === foodId))
+      .filter((food) => !!food);
+
+      selectedFoods.value = foods;
+    }
 
     return {
       state,
@@ -391,6 +533,7 @@ export default defineComponent({
       dialog,
       newMeal,
       openDialog,
+      openRecommendationDialog,
       editMeal,
       resetDialog,
       randomMeal,
@@ -398,6 +541,15 @@ export default defineComponent({
       // Search
       search,
       firstDayOfWeek,
+
+      // Food
+      useMobile,
+      attrs,
+      isOwnGroup,
+      foods: foodStore.store,
+      selectedFoods,
+      addFood,
+      removeFood,
     };
   },
 });
