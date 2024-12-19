@@ -7,7 +7,7 @@
       :submit-text="$t('general.create')"
       color="primary"
       :icon="$globals.icons.foods"
-      @submit="resetDialog"
+      @submit="sendRecommendation"
       @close="resetDialog"
     >
     <v-card-text>
@@ -21,7 +21,7 @@
         >
           <template #activator="{ on, attrs2 }">
             <v-text-field
-              v-model="newMeal.date"
+              v-model="newRecommendation.date"
               :label="$t('general.date')"
               :hint="$t('recipe.date-format-hint-yyyy-mm-dd')"
               persistent-hint
@@ -32,7 +32,7 @@
             />
           </template>
           <v-date-picker
-            v-model="newMeal.date"
+            v-model="newRecommendation.date"
             no-title
             :first-day-of-week="firstDayOfWeek"
             :local="$i18n.locale"
@@ -41,7 +41,7 @@
         </v-menu>
         <v-card-text>
           <v-select
-            v-model="newMeal.entryType"
+            v-model="newRecommendation.entryType"
             :return-object="false"
             :items="planTypeOptions"
             :label="$t('recipe.entry-type')"
@@ -287,6 +287,7 @@
 </template>
 
 <script lang="ts">
+import axios from "axios"
 import {
   computed,
   defineComponent,
@@ -324,10 +325,6 @@ export default defineComponent({
       type: Array as () => MealsByDate[],
       required: true,
     },
-    recommendationDialog: {
-      type: Boolean,
-      required: true,
-    },
     actions: {
       type: Object as () => ReturnType<typeof useMealplans>["actions"],
       required: true,
@@ -358,6 +355,8 @@ export default defineComponent({
       dialog: false,
       pickerMenu: null as null | boolean,
     });
+
+    const recommendationDialog = ref(false)
 
     const firstDayOfWeek = computed(() => {
       return household.value?.preferences?.firstDayOfWeek || 0;
@@ -415,6 +414,11 @@ export default defineComponent({
       userId: $auth.user?.id || "",
     });
 
+    const newRecommendation = reactive({
+      date: "",
+      entryType: "dinner" as PlanEntryType,
+    })
+
     const isCreateDisabled = computed(() => {
       if (dialog.note) {
         return !newMeal.title.trim();
@@ -429,9 +433,21 @@ export default defineComponent({
     }
 
     function openRecommendationDialog(date: Date) {
-      newMeal.date = format(date, "yyyy-MM-dd");
-      props.recommendationDialog = true;
+      newRecommendation.date = format(date, "yyyy-MM-dd");
+      recommendationDialog.value = true;
     }
+
+    const sendRecommendation = async () => {
+      try {
+        const response = await axios.post("http://host.docker.internal:3000/recommendation", {
+          recommendation: newRecommendation,
+          foods: selectedFoods.value,
+        });
+        console.log("Response:", response.data);
+      } catch (error) {
+        console.error("Error sending recommendation:", error);
+      }
+    };
 
     function editMeal(mealplan: UpdatePlanEntry) {
       const { date, title, text, entryType, recipeId, id, groupId, userId } = mealplan;
@@ -542,7 +558,10 @@ export default defineComponent({
       search,
       firstDayOfWeek,
 
-      // Food
+      // Recommendation
+      sendRecommendation,
+      recommendationDialog,
+      newRecommendation,
       useMobile,
       attrs,
       isOwnGroup,
